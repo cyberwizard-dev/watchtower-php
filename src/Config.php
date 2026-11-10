@@ -120,7 +120,7 @@ final class Config
      * cache_dir, turnstile_secret, counters ("auto"|"apcu"|"file"), pass_minutes,
      * honeypot_field, http_client (a Shield\ShieldHttp, for tests).
      *
-     * @var array{enabled: bool, mode_override: ?string, cache_dir: string, turnstile_secret: ?string, counters: string, pass_minutes: int, honeypot_field: string, http_client: ?Shield\ShieldHttp}
+     * @var array{enabled: bool, mode_override: ?string, cache_dir: string, turnstile_secret: ?string, counters: string, pass_minutes: int, honeypot_field: string, http_client: ?Shield\ShieldHttp, throttle_seconds: int}
      */
     public array $shield;
 
@@ -191,6 +191,7 @@ final class Config
             'pass_minutes' => max(1, (int) ($shield['pass_minutes'] ?? 30)),
             'honeypot_field' => self::nullableString($shield['honeypot_field'] ?? null) ?? 'wt_hp_website',
             'http_client' => ($shield['http_client'] ?? null) instanceof Shield\ShieldHttp ? $shield['http_client'] : null,
+            'throttle_seconds' => max(0, (int) ($shield['throttle_seconds'] ?? $env('WATCHTOWER_SHIELD_THROTTLE_SECONDS') ?? 10)),
         ];
     }
 

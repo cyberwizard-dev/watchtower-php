@@ -382,6 +382,13 @@ final class Shield
     }
 
     /**
+     * Record a decision. Decisions are security signals, so the execution is kept even when it
+     * was not sampled (the wt-shield record and the blocked request itself are delivered).
+     * Repeats of the same (action, rule, ip) are throttled to one per shield.throttle_seconds,
+     * shared by all workers through the rate limit counters, so a client hammering the app
+     * costs one kept request per window; throttled decisions are not recorded and leave the
+     * execution to its sample rate.
+     *
      * @param  array{method: string, path: string, ip: string, user_agent: string}  $request
      */
     private function record(array $request, string $action, string $rule, Rules $rules): void
@@ -391,6 +398,14 @@ final class Shield
         if ($execution === null) {
             return;
         }
+
+        $throttle = $this->config->shield['throttle_seconds'];
+
+        if ($throttle > 0 && $this->counter->attempt('record:'.$action.'|'.$rule.'|'.$request['ip'], 1, $throttle, 0, ($this->clock)()) !== null) {
+            return;
+        }
+
+        $execution->forceKeep = true;
 
         $this->client->push($this->client->records->shield($execution, [
             'action' => $action,

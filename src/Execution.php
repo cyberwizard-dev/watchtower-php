@@ -43,7 +43,7 @@ final class Execution
 
     public bool $hasUnhandledException = false;
 
-    /** Set when something (an exception, a slow query) means the execution is kept even if not sampled. */
+    /** Set when something (an exception, a slow query, a Shield decision) means the execution is kept even if not sampled. */
     public bool $forceKeep = false;
 
     public bool $ignored = false;

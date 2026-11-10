@@ -236,6 +236,7 @@ WatchTower::init([
         'counters' => 'auto',         // 'auto' (APCu when enabled, else files), 'apcu' or 'file'
         'pass_minutes' => 30,         // lifetime of the wt_shield_pass cookie
         'honeypot_field' => 'wt_hp_website', // until Watch Tower sends one
+        'throttle_seconds' => 10,     // one wt-shield record per (action, rule, IP) per window, env WATCHTOWER_SHIELD_THROTTLE_SECONDS; 0 = every one
     ],
 ]);
 ```
@@ -270,6 +271,13 @@ WatchTower::init([
   `aria-hidden`, `tabindex="-1"`, `autocomplete="off"` input. A POST that fills it is blocked
   (`action: block`) or only reported (`flag`).
 - **Monitor mode** blocks nothing and reports `would_block`.
+- **Sampling:** a decision is a security signal, so it keeps its execution even when
+  `sample_rate` dropped it: the `wt-shield` record and the request it was made for are
+  delivered. Repeats of the same (action, rule, IP) are recorded at most once per
+  `throttle_seconds` (10), counted in the same APCu or file counters as the rate limits so all
+  workers share the window; a throttled decision is not recorded and its request follows
+  `sample_rate`. Records carry no count, so during an attack Watch Tower sees one decision
+  per window and its rule hit counters count windows, not requests.
 
 ## Client IP behind proxies
 

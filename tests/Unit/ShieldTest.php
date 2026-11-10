@@ -53,6 +53,7 @@ final class ShieldTest extends TestCase
             'turnstile_secret' => 'turnstile-secret',
             'counters' => 'file',
             'http_client' => $this->shieldHttp,
+            'throttle_seconds' => 0,
             ...$shield,
         ]]);
         $client->useShield(new Shield($client->config, $client, fn (): int => $this->now));
@@ -723,5 +724,90 @@ final class ShieldTest extends TestCase
         $this->assertSame(60, $counter->attempt($key, 2, 60, 0, $this->now));
         $this->assertSame(300, $counter->attempt($key.'-b', 0, 60, 300, $this->now));
         $this->assertSame(300, $counter->attempt($key.'-b', 0, 60, 300, $this->now));
+    }
+
+    /**
+     * One request through a fresh client that is finished (delivered) afterwards.
+     *
+     * @param  array<string, mixed>  $server
+     * @param  array<string, mixed>  $shield
+     */
+    private function deliveredHit(array $server, array $shield = []): ?ShieldResponse
+    {
+        $client = $this->shieldClient($shield);
+        $server = self::server(['REQUEST_URI' => '/', 'HTTP_ACCEPT' => 'text/html', 'HTTP_USER_AGENT' => 'Mozilla/5.0', ...$server]);
+        $client->startRequest($server);
+        $response = $client->shield()->handle($server);
+        $client->finish(['status_code' => $response?->status ?? 200]);
+
+        return $response;
+    }
+
+    public function test_keeps_decisions_and_the_blocked_request_of_unsampled_executions(): void
+    {
+        $this->clientOptions = ['sample_rate' => 0.0];
+        $this->cacheRules(['block' => ['ips' => [['cidr' => '198.51.100.7/32', 'reason' => null, 'expires_at' => null]]]]);
+
+        $this->assertSame(403, $this->deliveredHit(['REMOTE_ADDR' => '198.51.100.7'])?->status);
+
+        $records = $this->http->records();
+        $this->assertSame('blocked', self::one($records, 'wt-shield')['action']);
+        WireFixtures::assertShape(self::one($records, 'wt-shield'));
+        $this->assertSame(403, self::one($records, 'request')['status_code']);
+        $this->assertSame(self::one($records, 'request')['trace_id'], self::one($records, 'wt-shield')['trace_id']);
+
+        // An allowed request of an unsampled execution is still dropped.
+        $requests = count($this->http->requests);
+        $this->assertNull($this->deliveredHit(['REMOTE_ADDR' => '198.51.100.8']));
+        $this->assertCount($requests, $this->http->requests);
+    }
+
+    public function test_keeps_monitor_mode_decisions_of_unsampled_executions(): void
+    {
+        $this->clientOptions = ['sample_rate' => 0.0];
+        $this->cacheRules(['mode' => 'monitor', 'block' => ['ips' => [['cidr' => '198.51.100.7/32', 'reason' => null, 'expires_at' => null]]]]);
+
+        $this->assertNull($this->deliveredHit(['REMOTE_ADDR' => '198.51.100.7']));
+
+        $this->assertSame('would_block', self::one($this->http->records(), 'wt-shield')['action']);
+        $this->assertCount(1, self::ofType($this->http->records(), 'request'));
+    }
+
+    public function test_throttles_repeats_of_the_same_action_rule_and_ip(): void
+    {
+        $this->clientOptions = ['sample_rate' => 0.0];
+        $this->cacheRules(['block' => ['ips' => [['cidr' => '198.51.100.0/24', 'reason' => null, 'expires_at' => null]]]]);
+        $shield = ['throttle_seconds' => 10];
+
+        foreach (range(1, 5) as $attempt) {
+            $this->assertSame(403, $this->deliveredHit(['REMOTE_ADDR' => '198.51.100.7'], $shield)?->status);
+        }
+
+        $this->deliveredHit(['REMOTE_ADDR' => '198.51.100.8'], $shield);
+
+        // Throttled decisions aren't recorded and don't keep their unsampled execution.
+        $this->assertSame(['198.51.100.7', '198.51.100.8'], array_column(self::ofType($this->http->records(), 'wt-shield'), 'ip'));
+        $this->assertCount(2, self::ofType($this->http->records(), 'request'));
+
+        $this->now += 9;
+        $this->deliveredHit(['REMOTE_ADDR' => '198.51.100.7'], $shield);
+        $this->assertCount(2, self::ofType($this->http->records(), 'wt-shield'));
+
+        $this->now += 2;
+        $this->deliveredHit(['REMOTE_ADDR' => '198.51.100.7'], $shield);
+        $this->assertCount(3, self::ofType($this->http->records(), 'wt-shield'));
+    }
+
+    public function test_throttles_by_default(): void
+    {
+        $this->cacheRules(['block' => ['ips' => [['cidr' => '198.51.100.7/32', 'reason' => null, 'expires_at' => null]]]]);
+
+        $this->assertSame(10, $this->client()->config->shield['throttle_seconds']);
+
+        // null drops the suite's throttle_seconds => 0 so the default applies.
+        $this->hit(['REMOTE_ADDR' => '198.51.100.7'], shield: ['throttle_seconds' => null]);
+        $this->hit(['REMOTE_ADDR' => '198.51.100.7'], shield: ['throttle_seconds' => null]);
+
+        $this->assertCount(1, $this->records);
     }
 }
