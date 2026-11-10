@@ -7,6 +7,7 @@ namespace WatchTower;
 use WatchTower\Http\CurlTracer;
 use WatchTower\Http\GuzzleMiddleware;
 use WatchTower\Log\Logger;
+use WatchTower\Shield\ShieldResponse;
 use WatchTower\Support\Guard;
 
 /**
@@ -18,7 +19,7 @@ use WatchTower\Support\Guard;
  */
 final class WatchTower
 {
-    public const VERSION = '0.1.0';
+    public const VERSION = '0.2.0';
 
     private static ?Client $client = null;
 
@@ -37,7 +38,9 @@ final class WatchTower
             return self::$client;
         }
 
-        return Guard::safely(static function () use ($options): Client {
+        $blocked = null;
+
+        $client = Guard::safely(static function () use ($options, &$blocked): Client {
             $client = new Client(new Config($options));
             self::$client = $client;
 
@@ -61,6 +64,11 @@ final class WatchTower
                 if ($client->config->captures('response_size')) {
                     $client->countResponseBytes();
                 }
+
+                // Shield decides before any application code runs.
+                if ($client->config->shield['enabled']) {
+                    $blocked = $client->shield()->handle($_SERVER, $_POST, $_COOKIE);
+                }
             }
 
             // Registering from inside a shutdown function puts ours last, after the application's own.
@@ -70,6 +78,24 @@ final class WatchTower
 
             return $client;
         });
+
+        if ($blocked instanceof ShieldResponse) {
+            $blocked->send();
+
+            // The shutdown handler still reports the request and its wt-shield record.
+            exit;
+        }
+
+        return $client;
+    }
+
+    /**
+     * The hidden Shield honeypot input to put inside forms; empty when Shield is off. A POST that
+     * fills it is blocked (or flagged, per the rules).
+     */
+    public static function honeypotField(): string
+    {
+        return (string) Guard::safely(static fn (): string => self::$client?->shield()->honeypotField() ?? '', '');
     }
 
     public static function client(): ?Client

@@ -117,6 +117,24 @@ final class WireFixtures
     }
 
     /**
+     * Types from the record contract (wt-record-contract.md) that the Watch Tower builders don't
+     * cover yet: exact field => type maps, checked by assertShape() but not against the builders.
+     *
+     * @return array<string, array<string, string>>
+     */
+    public static function contractOnly(): array
+    {
+        return [
+            'wt-shield' => [
+                ...self::BASE,
+                'agent_version' => 'string', 'execution_source' => 'string', 'execution_id' => 'string', 'execution_stage' => 'string',
+                'user' => 'string', 'action' => 'string', 'rule' => 'string', 'ip' => 'string', 'method' => 'string', 'path' => 'string',
+                'user_agent' => '?string', 'user_id' => '?string', 'rules_version' => 'string',
+            ],
+        ];
+    }
+
+    /**
      * Assert a record has exactly the builder's fields (plus the allowed extras) with matching types.
      *
      * @param  array<string, mixed>  $record
@@ -125,9 +143,12 @@ final class WireFixtures
     {
         $type = $record['t'] ?? null;
         Assert::assertIsString($type);
-        Assert::assertArrayHasKey($type, self::builders(), "No fixture for record type {$type}");
+        $expected = self::contractOnly()[$type] ?? null;
 
-        $expected = [...self::builders()[$type], ...self::extras()[$type]];
+        if ($expected === null) {
+            Assert::assertArrayHasKey($type, self::builders(), "No fixture for record type {$type}");
+            $expected = [...self::builders()[$type], ...self::extras()[$type]];
+        }
 
         Assert::assertSame([], array_values(array_diff(array_keys($expected), array_keys($record))), "{$type}: missing fields");
         Assert::assertSame([], array_values(array_diff(array_keys($record), array_keys($expected))), "{$type}: unexpected fields");

@@ -286,6 +286,33 @@ final class RecordFactory
     }
 
     /**
+     * `wt-shield`: a Shield decision that is not "allow".
+     *
+     * @param  array{action: string, rule: string, ip: string, method: string, path: string, user_agent: ?string, user_id: ?string, rules_version: string}  $decision
+     * @return array<string, mixed>
+     */
+    public function shield(Execution $execution, array $decision, float $timestamp): array
+    {
+        return [
+            ...$this->base('wt-shield', $timestamp),
+            'trace_id' => $execution->traceId,
+            'agent_version' => WatchTower::VERSION,
+            'execution_source' => $execution->source,
+            'execution_id' => $execution->id(),
+            'execution_stage' => $execution->stage,
+            'user' => $execution->userId,
+            'action' => $decision['action'],
+            'rule' => Text::tiny($decision['rule']),
+            'ip' => Text::tiny($decision['ip']),
+            'method' => Text::tiny($decision['method']),
+            'path' => Text::text($decision['path']),
+            'user_agent' => $decision['user_agent'] === null ? null : Text::restrict($decision['user_agent'], 255),
+            'user_id' => $decision['user_id'],
+            'rules_version' => Text::tiny($decision['rules_version']),
+        ];
+    }
+
+    /**
      * `wt-output` of a command (group = command group hash, xxh128 of its name).
      *
      * @return array<string, mixed>

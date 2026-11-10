@@ -19,6 +19,8 @@ show up on the same pages as your Laravel apps.
 
 - [Install](#install)
 - [Quick start](#quick-start): plain PHP, CodeIgniter-style front controllers, CLI scripts, WordPress
+- [Shield (bot and spam protection)](#shield-bot-and-spam-protection)
+- [Client IP behind proxies](#client-ip-behind-proxies)
 - [What is captured](#what-is-captured)
 - [Options](#options)
 - [API](#api)
@@ -180,7 +182,13 @@ define('WATCHTOWER_URL', 'https://watchtower.example.com');
 // optional
 define('WATCHTOWER_DEPLOY', 'theme-2.3.0');
 define('WATCHTOWER_OPTIONS', ['sample_rate' => 0.25, 'ignore_paths' => ['/health', '/wp-cron.php']]);
+// behind a proxy or CDN, see "Client IP behind proxies"
+define('WATCHTOWER_CLIENT_IP_PRESET', 'cloudflare');
+define('WATCHTOWER_TRUSTED_PROXIES', 'private'); // '*', 'private' or ['10.0.0.0/8', ...]
+define('WATCHTOWER_CLIENT_IP_HEADER', 'X-Forwarded-For'); // when no preset fits
 ```
+
+`WATCHTOWER_OPTIONS['client_ip']` wins over these constants, key by key.
 
 The plugin:
 
@@ -195,6 +203,10 @@ The plugin:
 - reports PHP errors, uncaught exceptions and fatal errors (WordPress's own fatal error
   handler keeps working).
 - sends `framework: "wordpress"` in `wt-hello`.
+- with Shield enabled (`define('WATCHTOWER_OPTIONS', ['shield' => ['enabled' => true]]);`),
+  adds the honeypot field to the comment, login, registration and lost password forms
+  (`comment_form`, `login_form`, `register_form`, `lostpassword_form`). Shield runs when the
+  mu-plugin loads, before WordPress handles the request.
 
 Query timing limits:
 
@@ -206,6 +218,115 @@ Query timing limits:
   records the calling functions, so `file` holds the innermost caller (e.g.
   `WP_Query->get_posts`) and `line` is 0.
 - Queries that bypass `$wpdb` (a plugin's own PDO/mysqli connection) are not seen.
+
+## Shield (bot and spam protection)
+
+Off by default. Shield applies rules you manage in Watch Tower inside `WatchTower::init()`,
+before any application code runs:
+
+```php
+WatchTower::init([
+    'token' => '...',
+    'base_url' => 'https://watchtower.example.com',
+    'shield' => [
+        'enabled' => true,            // env WATCHTOWER_SHIELD
+        'mode_override' => null,      // 'monitor' or 'enforce' instead of the mode Watch Tower sends
+        'cache_dir' => null,          // default: spool_dir
+        'turnstile_secret' => null,   // env TURNSTILE_SECRET (never sent by Watch Tower)
+        'counters' => 'auto',         // 'auto' (APCu when enabled, else files), 'apcu' or 'file'
+        'pass_minutes' => 30,         // lifetime of the wt_shield_pass cookie
+        'honeypot_field' => 'wt_hp_website', // until Watch Tower sends one
+    ],
+]);
+```
+
+- **Rules** come from `GET {base_url}/api/shield/v1/rules` with the environment token (1 s
+  connect, 2 s total, `If-None-Match` so unchanged rules are a 304) and are cached in a file
+  (written atomically) for their `ttl_seconds`. A stale copy is refreshed in the shutdown
+  handler, after the response is sent and at most once per 15 seconds across workers, so
+  requests never wait for Watch Tower. The last good copy is kept when Watch Tower is
+  unreachable; the very first request without any copy is allowed (fail open).
+- **Order:** allow list (wins over everything), blocked IPs (IPv4/IPv6 CIDR; IPv4-mapped IPv6
+  addresses match IPv4 ranges; expired entries ignored), user agent expressions (PCRE without
+  delimiters; invalid expressions are skipped, matching is capped at 1 KB with a low
+  backtracking limit), path globs (`*` crosses `/`, case-insensitive, decoded path with
+  duplicate slashes collapsed), rate limits, honeypot, challenge. The client IP is the one the
+  request record uses (see [Client IP behind proxies](#client-ip-behind-proxies)), so a
+  forged `X-Forwarded-For` can't dodge an IP block, reset a rate limit or reuse a pass cookie.
+- **Rate limits** count in a fixed window from the first hit, per `ip`, `ip_path` or `user`
+  (the SDK runs before your app knows the user, so `user` counts by IP), in APCu or in
+  `flock()`ed files under `cache_dir/shield-counters`. Over the limit: 429 with `Retry-After`,
+  for `block_seconds` when set.
+- **Responses:** 403 `Forbidden.` or 429 `Too Many Requests.` (JSON `{"message": ...}` when
+  the `Accept` header asks for JSON), then `exit`. Bodies never name the rule. The request is
+  still reported, with its `wt-shield` record in the same batch.
+- **Challenge:** a rate limit with `action: challenge` shows a browser GET (`Accept` with
+  `text/html`, not XHR) a Turnstile interstitial (429). It posts back to the same URL with the
+  reserved `_wt_shield_verify` field; the SDK checks the token with Cloudflare's siteverify
+  using `turnstile_secret`, sets the signed `wt_shield_pass` cookie (HMAC of expiry and client
+  IP keyed with a hash of the token, HttpOnly, SameSite=Lax) and redirects (303) to the same
+  URL. Other clients, or a missing secret, get the 429. 20 verifications per IP per minute.
+- **Honeypot:** `echo WatchTower::honeypotField();` inside your forms renders an off-screen,
+  `aria-hidden`, `tabindex="-1"`, `autocomplete="off"` input. A POST that fills it is blocked
+  (`action: block`) or only reported (`flag`).
+- **Monitor mode** blocks nothing and reports `would_block`.
+
+## Client IP behind proxies
+
+By default the client IP is `REMOTE_ADDR`, the address that opened the TCP connection. Behind
+a load balancer, CDN or reverse proxy that is the proxy, and the visitor's address is in a
+header the proxy sets. Headers come from the client too, so the SDK only reads one when the
+connection itself comes from a proxy you trust:
+
+```php
+'client_ip' => [
+    'preset' => null,          // 'cloudflare', 'digitalocean', 'aws_alb', 'heroku', 'fly', 'vercel', 'nginx', 'traefik'
+    'header' => null,          // 'X-Forwarded-For', 'Forwarded', 'X-Real-IP', 'CF-Connecting-IP', 'do-connecting-ip', 'Fly-Client-IP', 'True-Client-IP', ...
+    'trusted_proxies' => null, // list of CIDRs, '*' or 'private' (default 'private' when a header is set)
+],
+```
+
+- **The header is ignored unless `REMOTE_ADDR` is inside `trusted_proxies`.** A request that
+  reaches the app directly gets its `REMOTE_ADDR`, whatever it sends.
+- `trusted_proxies` is a list of IPv4/IPv6 CIDRs or addresses, which may include the keywords
+  `'private'` (10/8, 172.16/12, 192.168/16, 100.64/10, 127/8, 169.254/16, ::1, fc00::/7,
+  fe80::/10) and `'cloudflare'` (Cloudflare's edge ranges). A comma-separated string works too.
+- `'*'` trusts any peer. **Only use it when nothing can reach the app except through the
+  proxy**, e.g. DigitalOcean App Platform, Heroku, Render or Fly. On a server with a public IP
+  it lets anyone pick their IP.
+- **`X-Forwarded-For` and `Forwarded`** (RFC 7239 `for=`) are lists every proxy appends to, so
+  only the right end is trustworthy. The SDK walks them right to left, skips addresses in
+  `trusted_proxies`, and uses the first one that is not (the left-most when every hop is
+  trusted). With `'*'` only the peer is trusted, so the right-most entry wins. Ports, brackets
+  and quotes (`[2001:db8::1]:443`, `"203.0.113.7:8080"`) are removed; `unknown`, obfuscated
+  identifiers and garbage are skipped.
+- **Single-value headers** (`CF-Connecting-IP`, `do-connecting-ip`, `X-Real-IP`,
+  `Fly-Client-IP`, `True-Client-IP`, anything else) are used as they are when valid.
+- An invalid or missing header falls back to `REMOTE_ADDR`.
+- A preset sets `header` and `trusted_proxies`; either key set explicitly wins. Unknown presets
+  are ignored (`REMOTE_ADDR`).
+- The same address is used everywhere: the request record's `ip`, Shield (IP allow and block
+  lists, rate-limit keys, the IP-bound pass cookie, Turnstile `remoteip`) and `wt-shield`
+  records.
+
+| Hosting | Config | Why |
+| --- | --- | --- |
+| Cloudflare (orange cloud) | `['preset' => 'cloudflare']` | Cloudflare overwrites `CF-Connecting-IP`; only its [published ranges](https://www.cloudflare.com/ips/) (embedded, as of 2026-11-10) are trusted, so direct-to-origin requests can't spoof it. Override with `'trusted_proxies' => ['cloudflare', ...]` if the list changes or another proxy sits between. |
+| DigitalOcean App Platform | `['preset' => 'digitalocean']` | App Platform sets `do-connecting-ip` and only exposes apps through its edge, so the peer is always the platform and `'*'` is safe. Not for Droplets. |
+| AWS ALB / ELB | `['preset' => 'aws_alb']` | Header `X-Forwarded-For`, trusted `'private'`: the load balancer appends the client and connects to targets from private VPC addresses. Lock the instance's security group to the load balancer. |
+| nginx / Apache reverse proxy (same host or LAN) | `['preset' => 'nginx']` | Header `X-Forwarded-For`, trusted `'private'`. nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. Apache `mod_proxy` adds it. A proxy on a public address: `'trusted_proxies' => ['198.51.100.10']`. Using `X-Real-IP $remote_addr` instead: `['header' => 'X-Real-IP', 'trusted_proxies' => 'private']`. |
+| Traefik / Docker / Kubernetes ingress | `['preset' => 'traefik']` | Header `X-Forwarded-For`, trusted `'private'` (container networks are private ranges). Add your ingress CIDR if it is not. |
+| Heroku | `['preset' => 'heroku']` | The router appends the client to `X-Forwarded-For` and dynos are only reachable through it: `'*'`, right-most entry. |
+| Render | `['header' => 'X-Forwarded-For', 'trusted_proxies' => '*']` | Services are only reachable through Render's proxy. Check a request's `X-Forwarded-For` once to confirm the right-most entry is the client. |
+| Fly.io | `['preset' => 'fly']` | fly-proxy sets `Fly-Client-IP`; public traffic only reaches machines through it. |
+| Vercel (PHP runtime) | `['preset' => 'vercel']` | Vercel overwrites `X-Forwarded-For` with the client address. |
+| Cloudflare in front of another proxy (e.g. Cloudflare + nginx) | `['header' => 'CF-Connecting-IP', 'trusted_proxies' => ['private']]` | nginx is the peer; make sure nginx only accepts Cloudflare's ranges. |
+| No proxy | nothing (default) | `REMOTE_ADDR` is the client. Don't set a header: anyone could send it. |
+
+The deprecated `trusted_proxy_header` option still works as `client_ip.header`, but since
+0.2.0 it is only honoured when the peer is a private address (or one in
+`client_ip.trusted_proxies`), and `X-Forwarded-For` is read right to left instead of taking the
+first entry.
 
 ## What is captured
 
@@ -220,6 +341,7 @@ Query timing limits:
 | `user` | `WatchTower::user()` |
 | `wt-trace-link` | Incoming W3C `traceparent` header |
 | `wt-output` | Output of wrapped commands (opt-in) |
+| `wt-shield` | Each Shield decision that is not "allow" (`blocked`, `rate_limited`, `challenged`, `challenge_passed`, `challenge_failed`, `honeypot`, `would_block`) |
 | `wt-hello` | Once a day per server: `sdk: "php"`, versions, framework |
 
 Every in-execution record carries the execution header (`trace_id`, `execution_source`,
@@ -270,7 +392,12 @@ WatchTower::init([
 
     // Requests
     'ignore_paths' => ['/health'],    // exact paths or fnmatch() patterns ('/assets/*')
-    'trusted_proxy_header' => null,   // e.g. 'X-Forwarded-For' (first address wins); default REMOTE_ADDR
+    'client_ip' => [                  // see "Client IP behind proxies"; default REMOTE_ADDR only
+        'preset' => null,             // env WATCHTOWER_CLIENT_IP_PRESET
+        'header' => null,             // e.g. 'X-Forwarded-For', 'CF-Connecting-IP'
+        'trusted_proxies' => null,    // '*', 'private' or a list; env WATCHTOWER_TRUSTED_PROXIES
+    ],
+    'trusted_proxy_header' => null,   // deprecated alias for client_ip.header (trusts private peers)
 
     // Privacy
     'redact_keys' => Config::DEFAULT_REDACT_KEYS, // regex, same as Watch Tower's server-side pattern
@@ -297,6 +424,7 @@ WatchTower::init([
     'output_max_bytes' => 65536,      // wt-output keeps the last N bytes
     'install_handlers' => true,       // set false to install no global handlers
     'http_client' => null,            // a WatchTower\Transport\HttpClient (tests, proxies)
+    'shield' => ['enabled' => false], // see Shield
 ]);
 ```
 
@@ -322,6 +450,7 @@ connection.
 | `WatchTower::exitCode(int $code)` | Exit code of the auto-recorded script |
 | `WatchTower::ignore()` | Do not report this request or script |
 | `WatchTower::flush()` | Send what is buffered now |
+| `WatchTower::honeypotField()` | The hidden Shield honeypot input (empty when Shield is off) |
 
 Every method is a no-op before `init()` and never throws.
 

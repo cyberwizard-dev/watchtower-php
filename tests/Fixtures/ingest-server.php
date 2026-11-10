@@ -26,6 +26,31 @@ if ($path === '/api/ingest/v1') {
     return true;
 }
 
+if ($path === '/api/shield/v1/rules') {
+    $rules = is_file($dir.'/shield-rules.json') ? (string) file_get_contents($dir.'/shield-rules.json') : '';
+    file_put_contents($dir.'/shield-request-'.sprintf('%.6F', microtime(true)).'-'.mt_rand().'.json', json_encode(['headers' => $headers]));
+
+    if ($rules === '') {
+        http_response_code(503);
+
+        return true;
+    }
+
+    $version = (string) (json_decode($rules, true)['version'] ?? '');
+
+    if (($headers['if-none-match'] ?? null) === '"'.$version.'"') {
+        http_response_code(304);
+
+        return true;
+    }
+
+    header('Content-Type: application/json');
+    header('ETag: "'.$version.'"');
+    echo $rules;
+
+    return true;
+}
+
 if ($path === '/echo') {
     http_response_code((int) ($_GET['status'] ?? 200));
     header('Content-Type: application/json');

@@ -14,6 +14,12 @@ if ($path === '/health') {
     return true;
 }
 
+if ($path === '/form') {
+    echo '<form method="post">'.WatchTower::honeypotField().'</form>';
+
+    return true;
+}
+
 if (preg_match('#^/orders/(\d+)$#', $path, $match) === 1) {
     WatchTower::route('/orders/{id}', 'orders.show', 'orders.php');
     WatchTower::user(9, 'Grace Hopper', 'grace');
