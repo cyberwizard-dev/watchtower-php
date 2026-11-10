@@ -1,0 +1,65 @@
+{
+    "name": "cyberwizard/watchtower-php",
+    "description": "Framework-agnostic PHP SDK that reports requests, exceptions, logs, queries, outgoing HTTP calls and CLI commands to a self-hosted Watch Tower (Laravel Nightwatch compatible) backend.",
+    "keywords": [
+        "monitoring",
+        "apm",
+        "observability",
+        "nightwatch",
+        "watch-tower",
+        "error-tracking",
+        "wordpress"
+    ],
+    "license": "MIT",
+    "type": "library",
+    "require": {
+        "php": "^8.1"
+    },
+    "require-dev": {
+        "guzzlehttp/guzzle": "^7.8",
+        "monolog/monolog": "^3.5",
+        "phpunit/phpunit": "^10.5|^11.0",
+        "psr/log": "^3.0"
+    },
+    "suggest": {
+        "ext-curl": "Faster ingest transport and the WatchTower::curlExec() wrapper.",
+        "ext-zlib": "Gzip-compressed ingest batches.",
+        "psr/log": "WatchTower::logger() then implements Psr\\Log\\LoggerInterface.",
+        "monolog/monolog": "Use WatchTower\\Log\\MonologHandler to forward Monolog records.",
+        "guzzlehttp/guzzle": "Use WatchTower::guzzleMiddleware() to record outgoing requests."
+    },
+    "autoload": {
+        "psr-4": {
+            "WatchTower\\": "src/"
+        },
+        "files": [
+            "src/aliases.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "WatchTower\\Tests\\": "tests/"
+        }
+    },
+    "bin": [
+        "bin/watchtower-flush"
+    ],
+    "scripts": {
+        "test": "phpunit",
+        "build": "php build/build.php"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "archive": {
+        "exclude": [
+            "/tests",
+            "/build",
+            "/.gitignore",
+            "/phpunit.xml.dist",
+            "/pint.json"
+        ]
+    }
+}

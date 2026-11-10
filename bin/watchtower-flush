@@ -1,0 +1,91 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/*
+ * Deliver batches spooled by the Watch Tower PHP SDK. Run it from cron:
+ *
+ *   * * * * * /path/to/vendor/bin/watchtower-flush --config=/path/to/watchtower-config.php
+ *
+ * Options (env fallbacks in brackets):
+ *   --config=FILE     PHP file returning the same array you pass to WatchTower::init()
+ *   --token=TOKEN     environment token [WATCHTOWER_TOKEN]
+ *   --url=URL         Watch Tower base URL [WATCHTOWER_URL]
+ *   --spool-dir=DIR   spool directory [WATCHTOWER_SPOOL_DIR, default sys_get_temp_dir()/watchtower]
+ *   --max=N           maximum batches to send (default 1000)
+ *   --force           send even during the 10 minute back-off after a 401
+ *   --status          only print how many batches are queued
+ */
+
+$autoloaders = [
+    __DIR__.'/../vendor/autoload.php',
+    __DIR__.'/../../../autoload.php',
+    __DIR__.'/../dist/watchtower.php',
+    __DIR__.'/watchtower.php',
+];
+
+foreach ($autoloaders as $file) {
+    if (is_file($file)) {
+        require_once $file;
+        break;
+    }
+}
+
+if (! class_exists(\WatchTower\Config::class)) {
+    fwrite(STDERR, "watchtower-flush: could not find the Watch Tower SDK (vendor/autoload.php or watchtower.php).\n");
+    exit(2);
+}
+
+$args = getopt('', ['config:', 'token:', 'url:', 'spool-dir:', 'max:', 'force', 'status', 'help']);
+
+if (isset($args['help'])) {
+    fwrite(STDOUT, "Usage: watchtower-flush [--config=FILE] [--token=TOKEN] [--url=URL] [--spool-dir=DIR] [--max=N] [--force] [--status]\n");
+    exit(0);
+}
+
+$options = [];
+
+if (isset($args['config'])) {
+    $loaded = is_file((string) $args['config']) ? require (string) $args['config'] : null;
+
+    if (! is_array($loaded)) {
+        fwrite(STDERR, "watchtower-flush: --config must point to a PHP file that returns an array.\n");
+        exit(2);
+    }
+
+    $options = $loaded;
+}
+
+foreach (['token' => 'token', 'url' => 'base_url', 'spool-dir' => 'spool_dir'] as $flag => $option) {
+    if (isset($args[$flag])) {
+        $options[$option] = (string) $args[$flag];
+    }
+}
+
+$config = new \WatchTower\Config($options);
+$spool = new \WatchTower\Transport\Spool($config->spoolDir, $config->spoolMaxBytes);
+
+if (isset($args['status'])) {
+    fwrite(STDOUT, sprintf("%d batches queued in %s (%d bytes)\n", $spool->count(), $config->spoolDir, $spool->size()));
+    exit(0);
+}
+
+if (! $config->canSend()) {
+    fwrite(STDERR, "watchtower-flush: a token and base URL are required (--token/--url, --config or WATCHTOWER_TOKEN/WATCHTOWER_URL).\n");
+    exit(2);
+}
+
+$ingest = new \WatchTower\Transport\Ingest($config, $config->httpClient ?? \WatchTower\Transport\Ingest::defaultHttpClient(), $spool);
+
+if ($ingest->isBackedOff() && ! isset($args['force'])) {
+    fwrite(STDOUT, "Watch Tower rejected the token recently (401); waiting before retrying. Use --force to try now.\n");
+    exit(0);
+}
+
+$sent = $ingest->drain(max(1, (int) ($args['max'] ?? 1000)), null, isset($args['force']));
+$left = $spool->count();
+
+fwrite(STDOUT, sprintf("Sent %d batches, %d left in %s\n", $sent, $left, $config->spoolDir));
+
+exit($left > 0 && $sent === 0 ? 1 : 0);
