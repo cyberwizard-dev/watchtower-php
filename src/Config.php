@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace WatchTower;
 
 use Composer\Autoload\ClassLoader;
+use WatchTower\Support\ClientIp;
 use WatchTower\Transport\HttpClient;
 
 /**
@@ -75,7 +76,11 @@ final class Config
 
     public ?float $slowQueryMs;
 
+    /** @deprecated Use the `client_ip` option; kept as an alias for `client_ip.header`. */
     public ?string $trustedProxyHeader;
+
+    /** Resolves the client IP from `client_ip` (preset, header, trusted_proxies). */
+    public ClientIp $clientIp;
 
     public string $mode;
 
@@ -109,6 +114,15 @@ final class Config
 
     /** @var list<string> */
     public array $locationSkip;
+
+    /**
+     * Shield (bot & spam protection): enabled, mode_override ("monitor"|"enforce"|null),
+     * cache_dir, turnstile_secret, counters ("auto"|"apcu"|"file"), pass_minutes,
+     * honeypot_field, http_client (a Shield\ShieldHttp, for tests).
+     *
+     * @var array{enabled: bool, mode_override: ?string, cache_dir: string, turnstile_secret: ?string, counters: string, pass_minutes: int, honeypot_field: string, http_client: ?Shield\ShieldHttp}
+     */
+    public array $shield;
 
     /**
      * @param  array<string, mixed>  $options
@@ -146,6 +160,10 @@ final class Config
         $this->slowRequestMs = isset($options['slow_request_ms']) ? (float) $options['slow_request_ms'] : null;
         $this->slowQueryMs = isset($options['slow_query_ms']) ? (float) $options['slow_query_ms'] : null;
         $this->trustedProxyHeader = self::nullableString($options['trusted_proxy_header'] ?? null);
+        $clientIp = is_array($options['client_ip'] ?? null) ? $options['client_ip'] : [];
+        $clientIp['preset'] ??= $env('WATCHTOWER_CLIENT_IP_PRESET');
+        $clientIp['trusted_proxies'] ??= $env('WATCHTOWER_TRUSTED_PROXIES');
+        $this->clientIp = ClientIp::fromOptions($clientIp, $this->trustedProxyHeader);
         $this->mode = in_array($options['mode'] ?? null, ['auto', 'spool'], true) ? $options['mode'] : 'auto';
         $this->spoolDir = rtrim((string) ($options['spool_dir'] ?? $env('WATCHTOWER_SPOOL_DIR') ?? sys_get_temp_dir().DIRECTORY_SEPARATOR.'watchtower'), '/\\');
         $this->spoolMaxBytes = max(1024, (int) ($options['spool_max_bytes'] ?? 50 * 1024 * 1024));
@@ -162,6 +180,23 @@ final class Config
         $this->logLevel = strtolower((string) ($options['log_level'] ?? 'debug'));
         $this->stripNumericLiterals = (bool) ($options['strip_numeric_literals'] ?? true);
         $this->locationSkip = array_values(array_map('strval', (array) ($options['location_skip'] ?? [])));
+
+        $shield = is_array($options['shield'] ?? null) ? $options['shield'] : [];
+        $this->shield = [
+            'enabled' => (bool) ($shield['enabled'] ?? self::bool($env('WATCHTOWER_SHIELD'), false)),
+            'mode_override' => in_array($shield['mode_override'] ?? null, ['monitor', 'enforce'], true) ? $shield['mode_override'] : null,
+            'cache_dir' => rtrim((string) ($shield['cache_dir'] ?? $this->spoolDir), '/\\'),
+            'turnstile_secret' => self::nullableString($shield['turnstile_secret'] ?? $env('TURNSTILE_SECRET')),
+            'counters' => in_array($shield['counters'] ?? null, ['apcu', 'file'], true) ? $shield['counters'] : 'auto',
+            'pass_minutes' => max(1, (int) ($shield['pass_minutes'] ?? 30)),
+            'honeypot_field' => self::nullableString($shield['honeypot_field'] ?? null) ?? 'wt_hp_website',
+            'http_client' => ($shield['http_client'] ?? null) instanceof Shield\ShieldHttp ? $shield['http_client'] : null,
+        ];
+    }
+
+    public function shieldUrl(): string
+    {
+        return $this->baseUrl.'/api/shield/v1/rules';
     }
 
     public function captures(string $flag): bool

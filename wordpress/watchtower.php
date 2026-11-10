@@ -21,7 +21,13 @@ use WatchTower\WordPress\Integration;
  *   // optional:
  *   define('WATCHTOWER_DEPLOY', 'v1.4.2');
  *   define('WATCHTOWER_OPTIONS', ['sample_rate' => 0.5, 'ignore_paths' => ['/health', '/wp-cron.php']]);
+ *   // Shield (bot & spam protection; honeypot on comment/login/register/lost password forms):
+ *   define('WATCHTOWER_OPTIONS', ['shield' => ['enabled' => true]]);
  *   define('WATCHTOWER_SDK_PATH', '/path/to/watchtower.php');
+ *   // Client IP behind a proxy or CDN (see the SDK README, "Client IP behind proxies"):
+ *   define('WATCHTOWER_CLIENT_IP_PRESET', 'cloudflare'); // or digitalocean, aws_alb, heroku, fly, vercel, nginx, traefik
+ *   define('WATCHTOWER_CLIENT_IP_HEADER', 'X-Forwarded-For'); // without a preset
+ *   define('WATCHTOWER_TRUSTED_PROXIES', 'private');      // '*', 'private', or ['10.0.0.0/8', ...]
  */
 if (! defined('ABSPATH') || ! defined('WATCHTOWER_TOKEN') || ! defined('WATCHTOWER_URL')) {
     return;
@@ -59,6 +65,7 @@ if (! class_exists('WatchTower\WatchTower')) {
         'deploy' => defined('WATCHTOWER_DEPLOY') ? (string) WATCHTOWER_DEPLOY : 'wordpress-'.(string) $wp_version,
         'base_path' => rtrim(ABSPATH, '/\\'),
         ...$options,
+        'client_ip' => Integration::clientIpOptions($options),
         'token' => (string) WATCHTOWER_TOKEN,
         'base_url' => (string) WATCHTOWER_URL,
         'framework' => 'wordpress',

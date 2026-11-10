@@ -16,4 +16,9 @@ WatchTower::init([
     'deploy' => 'v2.0.0',
     'server' => 'script-host',
     'capture' => ['hello' => false],
+    'shield' => [
+        'enabled' => getenv('WT_SHIELD_DIR') !== false && getenv('WT_SHIELD_DIR') !== '',
+        'cache_dir' => getenv('WT_SHIELD_DIR') ?: null,
+        'turnstile_secret' => 'fixture-secret',
+    ],
 ]);

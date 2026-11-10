@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace WatchTower;
 
 use WatchTower\Records\RecordFactory;
+use WatchTower\Shield\Shield;
 use WatchTower\Support\Guard;
 use WatchTower\Support\Location;
 use WatchTower\Support\Redactor;
@@ -50,6 +51,8 @@ final class Client
 
     private bool $finished = false;
 
+    private ?Shield $shield = null;
+
     public function __construct(public readonly Config $config, ?HttpClient $http = null)
     {
         $this->redactor = new Redactor($config->redactKeys, $config->redactHeaders);
@@ -60,6 +63,18 @@ final class Client
             $http ?? $config->httpClient ?? Ingest::defaultHttpClient(),
             new Spool($config->spoolDir, $config->spoolMaxBytes),
         );
+    }
+
+    /** Shield (bot & spam protection), built on first use. */
+    public function shield(): Shield
+    {
+        return $this->shield ??= new Shield($this->config, $this);
+    }
+
+    /** @internal Tests inject a clock or counter. */
+    public function useShield(Shield $shield): void
+    {
+        $this->shield = $shield;
     }
 
     public function execution(): ?Execution
@@ -102,7 +117,7 @@ final class Client
             'route_domain' => '',
             'route_path' => RoutePattern::fromPath($path),
             'route_action' => '',
-            'ip' => $this->clientIp($server),
+            'ip' => $this->config->clientIp->resolve($server),
             'request_size' => is_numeric($server['CONTENT_LENGTH'] ?? null) ? (int) $server['CONTENT_LENGTH'] : 0,
             'headers' => $this->config->captures('headers') ? $headers : [],
         ];
@@ -476,6 +491,11 @@ final class Client
             }
 
             $this->finish($response);
+
+            // After the response and the ingest POST: refresh stale Shield rules.
+            if ($this->execution?->source === 'request') {
+                $this->shield?->afterResponse();
+            }
         });
     }
 
@@ -574,6 +594,7 @@ final class Client
         return array_values(array_filter([
             $this->config->captures('trace_context') ? 'trace_context' : null,
             $this->config->captures('command_output') ? 'output' : null,
+            $this->config->shield['enabled'] ? 'shield' : null,
         ]));
     }
 
@@ -635,27 +656,6 @@ final class Client
         }
 
         return Text::text(Text::json($this->redactor->data($_POST)));
-    }
-
-    /**
-     * @param  array<string, mixed>  $server
-     */
-    private function clientIp(array $server): string
-    {
-        if ($this->config->trustedProxyHeader !== null) {
-            $key = 'HTTP_'.strtoupper(str_replace('-', '_', $this->config->trustedProxyHeader));
-            $value = $server[$key] ?? null;
-
-            if (is_string($value)) {
-                $candidate = trim(explode(',', $value)[0]);
-
-                if (filter_var($candidate, FILTER_VALIDATE_IP) !== false) {
-                    return $candidate;
-                }
-            }
-        }
-
-        return (string) ($server['REMOTE_ADDR'] ?? '');
     }
 
     private function isIgnoredPath(string $path): bool

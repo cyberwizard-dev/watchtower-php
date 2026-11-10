@@ -29,6 +29,34 @@ final class Integration
 
     private static string $template = '';
 
+    /** Form actions that print inside the form, where the Shield honeypot goes. */
+    public const HONEYPOT_FORMS = ['comment_form', 'login_form', 'register_form', 'lostpassword_form'];
+
+    /**
+     * The `client_ip` option for the mu-plugin: WATCHTOWER_OPTIONS['client_ip'] wins, then the
+     * WATCHTOWER_CLIENT_IP_PRESET, WATCHTOWER_CLIENT_IP_HEADER and WATCHTOWER_TRUSTED_PROXIES
+     * constants (a list or a comma-separated string).
+     *
+     * @param  array<string, mixed>  $options
+     * @param  (callable(string): mixed)|null  $constant  reads a constant, null when undefined
+     * @return array<string, mixed>
+     */
+    public static function clientIpOptions(array $options, ?callable $constant = null): array
+    {
+        $constant ??= static fn (string $name): mixed => defined($name) ? constant($name) : null;
+        $clientIp = is_array($options['client_ip'] ?? null) ? $options['client_ip'] : [];
+
+        foreach (['preset' => 'WATCHTOWER_CLIENT_IP_PRESET', 'header' => 'WATCHTOWER_CLIENT_IP_HEADER', 'trusted_proxies' => 'WATCHTOWER_TRUSTED_PROXIES'] as $key => $name) {
+            $value = $constant($name);
+
+            if (! isset($clientIp[$key]) && (is_string($value) || is_array($value)) && $value !== '' && $value !== []) {
+                $clientIp[$key] = $value;
+            }
+        }
+
+        return $clientIp;
+    }
+
     public static function register(Client $client): void
     {
         self::$client = $client;
@@ -51,11 +79,30 @@ final class Integration
         add_action('init', [self::class, 'user'], PHP_INT_MAX);
         add_action('shutdown', [self::class, 'shutdown'], PHP_INT_MAX);
 
+        // Shield: the honeypot field in the comment, login, registration and lost password forms.
+        if ($client->config->shield['enabled']) {
+            foreach (self::HONEYPOT_FORMS as $hook) {
+                add_action($hook, [self::class, 'honeypot']);
+            }
+        }
+
         if ($client->config->captures('queries') && ! (defined('SAVEQUERIES') && SAVEQUERIES)) {
             self::$closer = static function (): void {
                 self::closePendingQuery();
             };
             add_filter('query', [self::class, 'queryStarted'], PHP_INT_MAX);
+        }
+    }
+
+    /** Form actions: print the hidden Shield honeypot input. */
+    public static function honeypot(): void
+    {
+        try {
+            if (self::$client !== null) {
+                echo self::$client->shield()->honeypotField();
+            }
+        } catch (\Throwable) {
+            // Never break the form.
         }
     }
 
