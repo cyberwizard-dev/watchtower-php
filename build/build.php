@@ -1,0 +1,182 @@
+<?php
+
+declare(strict_types=1);
+
+/*
+ * Builds dist/watchtower.php: every SDK class in one file, for hosts without
+ * Composer. Usage: php build/build.php [output file]
+ */
+
+$root = dirname(__DIR__);
+$output = $argv[1] ?? $root.'/dist/watchtower.php';
+$version = (static function () use ($root): string {
+    preg_match("/const VERSION = '([^']+)'/", (string) file_get_contents($root.'/src/WatchTower.php'), $match);
+
+    return $match[1] ?? 'dev';
+})();
+
+$files = [];
+$iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root.'/src', FilesystemIterator::SKIP_DOTS));
+
+foreach ($iterator as $file) {
+    if ($file->getExtension() === 'php' && $file->getFilename() !== 'aliases.php') {
+        $files[] = $file->getPathname();
+    }
+}
+
+sort($files);
+
+/**
+ * @return array{namespace: string, body: string, declares: list<string>, depends: list<string>}
+ */
+$parse = static function (string $path): array {
+    $code = (string) file_get_contents($path);
+    $tokens = token_get_all($code);
+    $namespace = '';
+    $uses = [];
+    $declares = [];
+    $depends = [];
+    $count = count($tokens);
+
+    $resolve = static function (string $name) use (&$namespace, &$uses): string {
+        if ($name[0] === '\\') {
+            return ltrim($name, '\\');
+        }
+
+        $first = explode('\\', $name)[0];
+
+        if (isset($uses[$first])) {
+            return $uses[$first].substr($name, strlen($first));
+        }
+
+        return ltrim($namespace.'\\'.$name, '\\');
+    };
+
+    $nameAt = static function (int &$i) use ($tokens, $count): string {
+        $name = '';
+
+        for (; $i < $count; $i++) {
+            $token = $tokens[$i];
+
+            if (is_array($token) && in_array($token[0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_NS_SEPARATOR], true)) {
+                $name .= $token[1];
+            } elseif (is_array($token) && $token[0] === T_WHITESPACE && $name === '') {
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        return $name;
+    };
+
+    for ($i = 0; $i < $count; $i++) {
+        $token = $tokens[$i];
+
+        if (! is_array($token)) {
+            continue;
+        }
+
+        if ($token[0] === T_NAMESPACE) {
+            $i++;
+            $namespace = $nameAt($i);
+        } elseif ($token[0] === T_USE && $namespace !== '') {
+            $j = $i + 1;
+            $name = $nameAt($j);
+
+            if ($name !== '' && ($tokens[$j] ?? null) === ';') {
+                $uses[substr(strrchr('\\'.$name, '\\'), 1)] = ltrim($name, '\\');
+            }
+        } elseif (in_array($token[0], [T_CLASS, T_INTERFACE, T_TRAIT, T_ENUM], true)) {
+            $previous = $i - 1;
+
+            while ($previous >= 0 && is_array($tokens[$previous]) && $tokens[$previous][0] === T_WHITESPACE) {
+                $previous--;
+            }
+
+            if ($previous >= 0 && is_array($tokens[$previous]) && in_array($tokens[$previous][0], [T_DOUBLE_COLON, T_NEW], true)) {
+                continue;
+            }
+
+            $j = $i + 1;
+            $declares[] = $resolve($nameAt($j));
+        } elseif (in_array($token[0], [T_EXTENDS, T_IMPLEMENTS], true)) {
+            $j = $i + 1;
+
+            while (true) {
+                $name = $nameAt($j);
+
+                if ($name !== '') {
+                    $depends[] = $resolve($name);
+                }
+
+                if (($tokens[$j] ?? null) === ',') {
+                    $j++;
+
+                    continue;
+                }
+
+                break;
+            }
+        }
+    }
+
+    $body = preg_replace('/^<\?php\s*/', '', $code);
+    $body = preg_replace('/^\s*declare\(strict_types=1\);\s*/m', '', (string) $body, 1);
+    $body = preg_replace('/^namespace\s+[^;]+;\s*/m', '', (string) $body, 1);
+
+    return ['namespace' => $namespace, 'body' => rtrim((string) $body), 'declares' => $declares, 'depends' => $depends];
+};
+
+$units = array_map($parse, $files);
+$declaredBy = [];
+
+foreach ($units as $index => $unit) {
+    foreach ($unit['declares'] as $class) {
+        $declaredBy[$class] = $index;
+    }
+}
+
+$ordered = [];
+$state = [];
+$visit = static function (int $index) use (&$visit, &$ordered, &$state, $units, $declaredBy): void {
+    if (($state[$index] ?? null) === 'done') {
+        return;
+    }
+
+    if (($state[$index] ?? null) === 'visiting') {
+        throw new RuntimeException('Circular class dependency in '.$units[$index]['namespace']);
+    }
+
+    $state[$index] = 'visiting';
+
+    foreach ($units[$index]['depends'] as $dependency) {
+        if (isset($declaredBy[$dependency]) && $declaredBy[$dependency] !== $index) {
+            $visit($declaredBy[$dependency]);
+        }
+    }
+
+    $state[$index] = 'done';
+    $ordered[] = $index;
+};
+
+foreach (array_keys($units) as $index) {
+    $visit($index);
+}
+
+$out = "<?php\n\n/**\n * Watch Tower PHP SDK {$version} - single-file build (generated by build/build.php, do not edit).\n *\n *     require __DIR__.'/watchtower.php';\n *     WatchTower::init(['token' => '...', 'base_url' => 'https://watchtower.example.com']);\n *\n * @license MIT\n */\n\ndeclare(strict_types=1);\n";
+
+foreach ($ordered as $index) {
+    $unit = $units[$index];
+    $out .= "\nnamespace {$unit['namespace']} {\n\n".$unit['body']."\n\n}\n";
+}
+
+$aliases = preg_replace('/^<\?php\s*/', '', (string) file_get_contents($root.'/src/aliases.php'));
+$out .= "\nnamespace {\n\n".rtrim((string) $aliases)."\n\n}\n";
+
+if (! is_dir(dirname($output))) {
+    mkdir(dirname($output), 0775, true);
+}
+
+file_put_contents($output, $out);
+fwrite(STDOUT, sprintf("Built %s (%d classes, %d bytes)\n", $output, count($declaredBy), strlen($out)));
