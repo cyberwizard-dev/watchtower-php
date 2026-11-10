@@ -19,7 +19,7 @@ use WatchTower\Support\Guard;
  */
 final class WatchTower
 {
-    public const VERSION = '0.2.0';
+    public const VERSION = '0.2.1';
 
     private static ?Client $client = null;
 

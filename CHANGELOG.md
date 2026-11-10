@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-11-10
+
+### Fixed
+
+- `wt-shield` decisions were dropped with the rest of an execution that `sample_rate` did not
+  keep (with `sample_rate` 0.1, nine blocked requests in ten were never reported). A recorded
+  decision now keeps its execution, so the `wt-shield` record and the blocked (or, in monitor
+  mode, allowed) request are always delivered.
+
+### Added
+
+- `shield.throttle_seconds` (env `WATCHTOWER_SHIELD_THROTTLE_SECONDS`, default 10, 0 = off):
+  at most one `wt-shield` record per (action, rule, IP) per window, shared by all workers
+  through the APCu or file counters, so a client hammering the app costs one kept request per
+  window. Throttled decisions are not recorded and leave the request to its sample rate.
+
 ## [0.2.0] - 2026-11-10
 
 ### Added
