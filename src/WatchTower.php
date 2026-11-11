@@ -19,7 +19,7 @@ use WatchTower\Support\Guard;
  */
 final class WatchTower
 {
-    public const VERSION = '0.2.1';
+    public const VERSION = '0.3.0';
 
     private static ?Client $client = null;
 
@@ -96,6 +96,48 @@ final class WatchTower
     public static function honeypotField(): string
     {
         return (string) Guard::safely(static fn (): string => self::$client?->shield()->honeypotField() ?? '', '');
+    }
+
+    /**
+     * The browser monitoring `<script>` tag for the page's `<head>`; empty until `browser_key` is
+     * configured. It never contains the environment token.
+     */
+    public static function browserTag(): string
+    {
+        return (string) Guard::safely(static fn (): string => self::$client?->browser()->tag() ?? '', '');
+    }
+
+    /**
+     * Serve the browser proxy: when this request is GET {browser_path}/s.js or
+     * POST {browser_path}/e, answer it (Watch Tower's script, or forward the beacon), leave it
+     * out of the reported requests and exit. Returns false, having done nothing, for every other
+     * request and when the proxy is not configured. Call it right after init().
+     *
+     * @param  bool  $exit  false: return true after sending instead of exiting
+     */
+    public static function handleBrowserProxy(bool $exit = true): bool
+    {
+        $response = Guard::safely(static function (): ?ShieldResponse {
+            $response = self::$client?->browser()->handle($_SERVER);
+
+            if ($response !== null) {
+                self::$client?->ignore();
+            }
+
+            return $response;
+        });
+
+        if (! $response instanceof ShieldResponse) {
+            return false;
+        }
+
+        Guard::safely(static fn () => $response->send());
+
+        if ($exit) {
+            exit;
+        }
+
+        return true;
     }
 
     public static function client(): ?Client

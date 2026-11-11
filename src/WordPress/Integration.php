@@ -86,6 +86,12 @@ final class Integration
             }
         }
 
+        // Browser monitoring: the script tag early in <head> (the proxy itself is served by the
+        // mu-plugin, before WordPress loads its plugins).
+        if ($client->browser()->enabled()) {
+            add_action('wp_head', [self::class, 'browserTag'], 1);
+        }
+
         if ($client->config->captures('queries') && ! (defined('SAVEQUERIES') && SAVEQUERIES)) {
             self::$closer = static function (): void {
                 self::closePendingQuery();
@@ -103,6 +109,18 @@ final class Integration
             }
         } catch (\Throwable) {
             // Never break the form.
+        }
+    }
+
+    /** `wp_head` action: print the browser monitoring script tag. */
+    public static function browserTag(): void
+    {
+        try {
+            if (self::$client !== null) {
+                echo self::$client->browser()->tag();
+            }
+        } catch (\Throwable) {
+            // Never break the page.
         }
     }
 

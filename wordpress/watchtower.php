@@ -24,6 +24,10 @@ use WatchTower\WordPress\Integration;
  *   // Shield (bot & spam protection; honeypot on comment/login/register/lost password forms):
  *   define('WATCHTOWER_OPTIONS', ['shield' => ['enabled' => true]]);
  *   define('WATCHTOWER_SDK_PATH', '/path/to/watchtower.php');
+ *   // Browser monitoring (page views, Web Vitals, JavaScript errors; script tag in wp_head,
+ *   // served with its beacons from this site under /_t so content blockers let it through):
+ *   define('WATCHTOWER_BROWSER_KEY', 'your-public-browser-key');
+ *   define('WATCHTOWER_OPTIONS', ['browser_path' => '/_t', 'browser_sample' => 0.5]);
  *   // Client IP behind a proxy or CDN (see the SDK README, "Client IP behind proxies"):
  *   define('WATCHTOWER_CLIENT_IP_PRESET', 'cloudflare'); // or digitalocean, aws_alb, heroku, fly, vercel, nginx, traefik
  *   define('WATCHTOWER_CLIENT_IP_HEADER', 'X-Forwarded-For'); // without a preset
@@ -64,6 +68,7 @@ if (! class_exists('WatchTower\WatchTower')) {
         'service' => function_exists('get_bloginfo') ? (string) get_bloginfo('name') : null,
         'deploy' => defined('WATCHTOWER_DEPLOY') ? (string) WATCHTOWER_DEPLOY : 'wordpress-'.(string) $wp_version,
         'base_path' => rtrim(ABSPATH, '/\\'),
+        ...(defined('WATCHTOWER_BROWSER_KEY') ? ['browser_key' => (string) WATCHTOWER_BROWSER_KEY] : []),
         ...$options,
         'client_ip' => Integration::clientIpOptions($options),
         'token' => (string) WATCHTOWER_TOKEN,
@@ -83,4 +88,8 @@ if (! class_exists('WatchTower\WatchTower')) {
     }
 
     Integration::register($client);
+
+    // Browser proxy ({browser_path}/s.js and {browser_path}/e): answered and exited here, before
+    // WordPress loads plugins, the theme or the main query. Every other request goes on.
+    WatchTower::handleBrowserProxy();
 })();

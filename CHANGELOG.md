@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-11
+
+### Added
+
+- Browser monitoring (page views, Core Web Vitals, JavaScript errors), off until
+  `browser_key` (env `WATCHTOWER_BROWSER_KEY`) is set. Options `browser_proxy` (default true),
+  `browser_path` (default `/_t`), `browser_release` (default: `deploy`) and `browser_sample`,
+  each with a `WATCHTOWER_BROWSER_*` environment fallback.
+- `WatchTower::browserTag()`: the `<script>` tag for the page's `<head>`. With the proxy it
+  loads `{browser_path}/s.js` with `data-endpoint="{browser_path}/e"`; without it,
+  `{base_url}/watchtower-browser.js`. Attributes are HTML-escaped and the environment token is
+  never included.
+- `WatchTower::handleBrowserProxy()`: a first-party proxy, so content blockers don't drop the
+  script and its beacons. GET `{browser_path}/s.js` serves Watch Tower's script, cached in
+  `spool_dir` for an hour (last good copy kept, failed fetches retried after a minute);
+  POST `{browser_path}/e` forwards beacons up to 64 KB to `/api/browser/v1/{browser_key}` with
+  the environment token and `X-Watchtower-Origin`, `X-Watchtower-User-Agent` and
+  `X-Watchtower-Client-Ip` (from the `client_ip` rules). 3 s timeouts; visitors always get a
+  200 script or a 204, whatever happens to Watch Tower. The proxy's requests are not
+  reported and its calls are not recorded as outgoing requests. Returns false, doing nothing,
+  for every other request.
+- WordPress: `WATCHTOWER_BROWSER_KEY` (or `WATCHTOWER_OPTIONS['browser_key']`); the mu-plugin
+  prints the tag in `wp_head` and answers the proxy paths as soon as it loads.
+- `wt-hello` lists `browser` when a browser key is configured.
+
 ## [0.2.1] - 2026-11-10
 
 ### Fixed

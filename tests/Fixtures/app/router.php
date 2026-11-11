@@ -6,10 +6,18 @@
 
 require __DIR__.'/../scripts/bootstrap.php';
 
+WatchTower::handleBrowserProxy();
+
 $path = (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 
 if ($path === '/health') {
     echo 'ok';
+
+    return true;
+}
+
+if ($path === '/page') {
+    echo '<head>'.WatchTower::browserTag().'</head>';
 
     return true;
 }

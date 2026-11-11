@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace WatchTower;
 
+use WatchTower\Browser\Browser;
 use WatchTower\Records\RecordFactory;
 use WatchTower\Shield\Shield;
 use WatchTower\Support\Guard;
@@ -53,6 +54,8 @@ final class Client
 
     private ?Shield $shield = null;
 
+    private ?Browser $browser = null;
+
     public function __construct(public readonly Config $config, ?HttpClient $http = null)
     {
         $this->redactor = new Redactor($config->redactKeys, $config->redactHeaders);
@@ -75,6 +78,18 @@ final class Client
     public function useShield(Shield $shield): void
     {
         $this->shield = $shield;
+    }
+
+    /** Browser monitoring (script tag and first-party proxy), built on first use. */
+    public function browser(): Browser
+    {
+        return $this->browser ??= new Browser($this->config);
+    }
+
+    /** @internal Tests inject an HTTP client or a clock. */
+    public function useBrowser(Browser $browser): void
+    {
+        $this->browser = $browser;
     }
 
     public function execution(): ?Execution
@@ -595,6 +610,7 @@ final class Client
             $this->config->captures('trace_context') ? 'trace_context' : null,
             $this->config->captures('command_output') ? 'output' : null,
             $this->config->shield['enabled'] ? 'shield' : null,
+            $this->config->browserKey !== null ? 'browser' : null,
         ]));
     }
 

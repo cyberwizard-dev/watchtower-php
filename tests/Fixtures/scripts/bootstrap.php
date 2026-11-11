@@ -16,6 +16,7 @@ WatchTower::init([
     'deploy' => 'v2.0.0',
     'server' => 'script-host',
     'capture' => ['hello' => false],
+    'browser_key' => getenv('WT_BROWSER_KEY') ?: null,
     'shield' => [
         'enabled' => getenv('WT_SHIELD_DIR') !== false && getenv('WT_SHIELD_DIR') !== '',
         'cache_dir' => getenv('WT_SHIELD_DIR') ?: null,

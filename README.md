@@ -20,6 +20,7 @@ show up on the same pages as your Laravel apps.
 - [Install](#install)
 - [Quick start](#quick-start): plain PHP, CodeIgniter-style front controllers, CLI scripts, WordPress
 - [Shield (bot and spam protection)](#shield-bot-and-spam-protection)
+- [Browser monitoring](#browser-monitoring)
 - [Client IP behind proxies](#client-ip-behind-proxies)
 - [What is captured](#what-is-captured)
 - [Options](#options)
@@ -207,6 +208,9 @@ The plugin:
   adds the honeypot field to the comment, login, registration and lost password forms
   (`comment_form`, `login_form`, `register_form`, `lostpassword_form`). Shield runs when the
   mu-plugin loads, before WordPress handles the request.
+- with a browser key (`define('WATCHTOWER_BROWSER_KEY', '...');`), prints the browser
+  monitoring script tag in `wp_head` and serves its first-party proxy when the mu-plugin
+  loads, see [Browser monitoring](#browser-monitoring).
 
 Query timing limits:
 
@@ -278,6 +282,98 @@ WatchTower::init([
   workers share the window; a throttled decision is not recorded and its request follows
   `sample_rate`. Records carry no count, so during an attack Watch Tower sees one decision
   per window and its rule hit counters count windows, not requests.
+
+## Browser monitoring
+
+Page views, Core Web Vitals and JavaScript errors from your visitors' browsers, reported to
+the same Watch Tower environment. Off until you set a browser key (Watch Tower: the
+environment's settings, "Browser"). The key is public: it is printed in your pages.
+
+### Plain PHP
+
+```php
+WatchTower::init([
+    'token' => getenv('WATCHTOWER_TOKEN'),
+    'base_url' => 'https://watchtower.example.com',
+    'browser_key' => 'your-public-browser-key',  // env WATCHTOWER_BROWSER_KEY
+]);
+
+// Right after init(): answers GET /_t/s.js and POST /_t/e, then exits.
+// Every other request returns false and continues untouched.
+WatchTower::handleBrowserProxy();
+
+// ... your application ...
+```
+
+and in the `<head>` of your layout:
+
+```php
+<?= WatchTower::browserTag() ?>
+```
+
+which renders
+
+```html
+<script src="/_t/s.js" data-key="your-public-browser-key" data-endpoint="/_t/e" data-release="v1.4.2" defer></script>
+```
+
+`browserTag()` is an empty string while no browser key is configured, and the tag never
+contains the environment token. Pass `handleBrowserProxy(false)` to have it return `true`
+after answering instead of calling `exit` (frameworks that must finish their own response
+cycle).
+
+### WordPress
+
+```php
+// wp-config.php, next to WATCHTOWER_TOKEN and WATCHTOWER_URL
+define('WATCHTOWER_BROWSER_KEY', 'your-public-browser-key');
+// optional
+define('WATCHTOWER_OPTIONS', ['browser_sample' => 0.5]);
+```
+
+The mu-plugin prints the tag in `wp_head` (priority 1) and answers the proxy paths as soon as
+it loads, before WordPress loads other plugins, the theme or the main query, so a beacon
+costs very little. `WATCHTOWER_OPTIONS['browser_key']` wins over the constant.
+
+### Options
+
+```php
+'browser_key' => null,       // public browser key; env WATCHTOWER_BROWSER_KEY. Nothing happens without it
+'browser_proxy' => true,     // serve the script and beacons from your domain; env WATCHTOWER_BROWSER_PROXY
+'browser_path' => '/_t',     // proxy prefix: {path}/s.js and {path}/e; env WATCHTOWER_BROWSER_PATH
+'browser_release' => null,   // data-release, default: the `deploy` option; env WATCHTOWER_BROWSER_RELEASE
+'browser_sample' => null,    // data-sample, share of page views kept (0..1); env WATCHTOWER_BROWSER_SAMPLE
+```
+
+With `browser_proxy` off (or without a token) the tag loads
+`{base_url}/watchtower-browser.js` and the script sends beacons straight to Watch Tower.
+
+### Why a proxy
+
+Content blockers (uBlock Origin, Brave Shields, Safari and Firefox tracking protection,
+Pi-hole lists) drop requests to third-party monitoring hosts, so a script served from
+`watchtower.example.com` misses a sizeable share of visitors. The proxy keeps both the script
+and its beacons on your own domain:
+
+- **GET `{browser_path}/s.js`** serves `{base_url}/watchtower-browser.js`, cached in
+  `spool_dir` for an hour (`application/javascript`, `Cache-Control: public, max-age=3600`).
+  When Watch Tower can't be reached the last good copy is served; with no copy, an empty
+  200 script (`no-store`). A failed fetch is retried after a minute, not on every page view.
+- **POST `{browser_path}/e`** forwards the raw beacon body (up to 64 KB; larger or empty
+  bodies are dropped) to `POST {base_url}/api/browser/v1/{browser_key}` with the environment
+  token as `Authorization: Bearer`, `Content-Type: text/plain`, and the visitor's details in
+  `X-Watchtower-Origin` (the site's scheme://host), `X-Watchtower-User-Agent` and
+  `X-Watchtower-Client-Ip` (resolved with the [client IP rules](#client-ip-behind-proxies),
+  so a forged `X-Forwarded-For` is ignored). Watch Tower only trusts those headers together
+  with the token of the environment that owns the browser key. The visitor always gets a 204.
+- Both calls use a 3 s connect and total timeout, go through the SDK's own HTTP client (never
+  recorded as outgoing requests) and the proxy requests themselves are left out of your
+  reported requests.
+
+The proxy paths are matched from the domain root and must reach PHP. If your web server
+serves `*.js` files itself without falling back to the front controller (an nginx
+`location ~* \.js$` block without `try_files ... /index.php`), route `{browser_path}/` to PHP
+or pick a `browser_path` it passes through.
 
 ## Client IP behind proxies
 
@@ -433,6 +529,13 @@ WatchTower::init([
     'install_handlers' => true,       // set false to install no global handlers
     'http_client' => null,            // a WatchTower\Transport\HttpClient (tests, proxies)
     'shield' => ['enabled' => false], // see Shield
+
+    // Browser monitoring (see "Browser monitoring")
+    'browser_key' => null,            // env WATCHTOWER_BROWSER_KEY
+    'browser_proxy' => true,          // env WATCHTOWER_BROWSER_PROXY
+    'browser_path' => '/_t',          // env WATCHTOWER_BROWSER_PATH
+    'browser_release' => null,        // default: deploy; env WATCHTOWER_BROWSER_RELEASE
+    'browser_sample' => null,         // 0..1; env WATCHTOWER_BROWSER_SAMPLE
 ]);
 ```
 
@@ -459,6 +562,8 @@ connection.
 | `WatchTower::ignore()` | Do not report this request or script |
 | `WatchTower::flush()` | Send what is buffered now |
 | `WatchTower::honeypotField()` | The hidden Shield honeypot input (empty when Shield is off) |
+| `WatchTower::browserTag()` | The browser monitoring `<script>` tag (empty without `browser_key`) |
+| `WatchTower::handleBrowserProxy(bool $exit = true)` | Answer `{browser_path}/s.js` and `{browser_path}/e` and exit; `false` for other requests |
 
 Every method is a no-op before `init()` and never throws.
 

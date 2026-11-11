@@ -124,6 +124,21 @@ final class Config
      */
     public array $shield;
 
+    /** Public browser key (Watch Tower: environment settings); null = no browser monitoring. */
+    public ?string $browserKey;
+
+    /** Serve the browser script and beacons from the app's own domain (needs the token). */
+    public bool $browserProxy;
+
+    /** Path prefix of the browser proxy on the app's domain, e.g. "/_t" ("" = the root). */
+    public string $browserPath;
+
+    /** `data-release` of the browser script (defaults to `deploy`). */
+    public string $browserRelease;
+
+    /** `data-sample` of the browser script (0..1); null = Watch Tower's default. */
+    public ?float $browserSample;
+
     /**
      * @param  array<string, mixed>  $options
      */
@@ -193,11 +208,25 @@ final class Config
             'http_client' => ($shield['http_client'] ?? null) instanceof Shield\ShieldHttp ? $shield['http_client'] : null,
             'throttle_seconds' => max(0, (int) ($shield['throttle_seconds'] ?? $env('WATCHTOWER_SHIELD_THROTTLE_SECONDS') ?? 10)),
         ];
+
+        $this->browserKey = self::nullableString($options['browser_key'] ?? $env('WATCHTOWER_BROWSER_KEY'));
+        $this->browserProxy = isset($options['browser_proxy']) ? (bool) $options['browser_proxy'] : self::bool($env('WATCHTOWER_BROWSER_PROXY'), true);
+        $browserPath = trim((string) ($options['browser_path'] ?? $env('WATCHTOWER_BROWSER_PATH') ?? '/_t'), '/');
+        $this->browserPath = $browserPath === '' ? '' : '/'.$browserPath;
+        $this->browserRelease = (string) ($options['browser_release'] ?? $env('WATCHTOWER_BROWSER_RELEASE') ?? $this->deploy);
+        $sample = $options['browser_sample'] ?? $env('WATCHTOWER_BROWSER_SAMPLE');
+        $this->browserSample = is_numeric($sample) ? max(0.0, min(1.0, (float) $sample)) : null;
     }
 
     public function shieldUrl(): string
     {
         return $this->baseUrl.'/api/shield/v1/rules';
+    }
+
+    /** Where the browser proxy sends beacons for this environment's browser key. */
+    public function browserBeaconUrl(): string
+    {
+        return $this->baseUrl.'/api/browser/v1/'.rawurlencode((string) $this->browserKey);
     }
 
     public function captures(string $flag): bool
