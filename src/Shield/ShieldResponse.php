@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace WatchTower\Shield;
 
 /**
- * The response Shield sends instead of the application's.
+ * The response Shield (or the browser proxy) sends instead of the application's.
  */
 final class ShieldResponse
 {

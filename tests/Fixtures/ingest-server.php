@@ -1,9 +1,10 @@
 <?php
 
 /*
- * Router for `php -S`: a stand-in Watch Tower ingest endpoint plus an echo
- * endpoint for outgoing-request tests. Captured requests are written to
- * WT_CAPTURE_DIR; the ingest status code is read from WT_CAPTURE_DIR/status.
+ * Router for `php -S`: a stand-in Watch Tower ingest endpoint (plus Shield rules, the
+ * browser script and browser beacons) and an echo endpoint for outgoing-request tests.
+ * Captured requests are written to WT_CAPTURE_DIR; the ingest status code is read from
+ * WT_CAPTURE_DIR/status.
  */
 
 $dir = (string) getenv('WT_CAPTURE_DIR');
@@ -47,6 +48,33 @@ if ($path === '/api/shield/v1/rules') {
     header('Content-Type: application/json');
     header('ETag: "'.$version.'"');
     echo $rules;
+
+    return true;
+}
+
+if ($path === '/watchtower-browser.js') {
+    file_put_contents($dir.'/browser-script-'.sprintf('%.6F', microtime(true)).'-'.mt_rand().'.json', json_encode(['headers' => $headers]));
+
+    if (is_file($dir.'/browser-down')) {
+        http_response_code(503);
+
+        return true;
+    }
+
+    header('Content-Type: application/javascript');
+    echo '/* watchtower-browser */';
+
+    return true;
+}
+
+if (str_starts_with($path, '/api/browser/v1/')) {
+    file_put_contents($dir.'/browser-beacon-'.sprintf('%.6F', microtime(true)).'-'.mt_rand().'.json', json_encode([
+        'method' => $_SERVER['REQUEST_METHOD'],
+        'path' => $path,
+        'headers' => $headers,
+        'body' => $body,
+    ]));
+    http_response_code(204);
 
     return true;
 }
