@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Session replay through the browser proxy: `handleBrowserProxy()` also answers
+  GET `{browser_path}/r.js` (Watch Tower's recorder, cached like the script), GET
+  `{browser_path}/c` (the replay settings, cached for a minute; `{"replay":null}` when Watch
+  Tower is unreachable or does not know replay) and POST `{browser_path}/r` (one recorded
+  chunk, up to 1 MB). A 4xx from Watch Tower on a chunk is passed on so the recorder stops.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added

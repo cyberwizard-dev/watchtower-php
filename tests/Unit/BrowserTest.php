@@ -249,6 +249,59 @@ final class BrowserTest extends TestCase
         $this->assertCount(2, $this->browserHttp->to(self::SCRIPT_URL), 'one failed refresh, then the minute back-off');
     }
 
+    public function test_the_replay_recorder_is_served_from_watch_tower_and_cached(): void
+    {
+        $this->browserHttp->queue('https://watchtower.test/watchtower-replay.js', 200, '/* recorder */');
+        $browser = $this->browser();
+        $request = self::server(['REQUEST_URI' => '/_t/r.js']);
+
+        $this->assertSame([200, '/* recorder */'], [$browser->handle($request)?->status, $browser->handle($request)?->body]);
+        $this->assertCount(1, $this->browserHttp->to('https://watchtower.test/watchtower-replay.js'));
+        $this->assertFileExists($browser->recorderPath());
+    }
+
+    public function test_replay_settings_are_forwarded_and_cached_for_a_minute(): void
+    {
+        $url = self::BEACON_URL.'/config';
+        $this->browserHttp->queue($url, 200, '{"replay":{"sample":0.1}}')->queue($url, 404, 'Not found');
+        $browser = $this->browser();
+        $request = self::server(['REQUEST_URI' => '/_t/c', 'HTTP_USER_AGENT' => 'Mozilla/5.0 Chrome/131.0']);
+
+        $first = $browser->handle($request);
+        $this->assertSame([200, '{"replay":{"sample":0.1}}'], [$first?->status, $first->body]);
+        $this->assertSame('application/json', $first->header('Content-Type'));
+        $this->assertSame('{"replay":{"sample":0.1}}', $browser->handle($request)?->body);
+        $this->assertCount(1, $this->browserHttp->to($url));
+        $this->assertSame('Bearer test-token', $this->browserHttp->to($url)[0]['headers']['Authorization']);
+        $this->assertSame('https://app.test', $this->browserHttp->to($url)[0]['headers']['X-Watchtower-Origin']);
+
+        // A Watch Tower without session replay answers 404: the script does not record.
+        $this->now += Browser::REPLAY_CONFIG_TTL_SECONDS + 1;
+        $this->assertSame('{"replay":null}', $browser->handle($request)?->body);
+    }
+
+    public function test_replay_chunks_are_forwarded_and_refusals_passed_on(): void
+    {
+        $url = self::BEACON_URL.'/replay';
+        $this->browserHttp->queue($url, 204)->queue($url, 403, 'Session replay is off')->queue($url, 0);
+        $browser = $this->browser();
+        $chunk = (string) gzencode('{"session":"abc123","seq":0,"events":[]}');
+        $request = self::beacon(['REQUEST_URI' => '/_t/r']);
+
+        $this->assertSame(204, $browser->handle($request, static fn (): string => $chunk)?->status);
+        $this->assertSame(403, $browser->handle($request, static fn (): string => $chunk)?->status);
+        $this->assertSame(204, $browser->handle($request, static fn (): string => $chunk)?->status, 'Watch Tower down');
+
+        $sent = $this->browserHttp->to($url);
+        $this->assertCount(3, $sent);
+        $this->assertSame($chunk, $sent[0]['body']);
+        $this->assertSame('Bearer test-token', $sent[0]['headers']['Authorization']);
+        $this->assertSame('198.51.100.23', $sent[0]['headers']['X-Watchtower-Client-Ip']);
+
+        $this->assertSame(413, $browser->handle(self::beacon(['REQUEST_URI' => '/_t/r', 'CONTENT_LENGTH' => (string) (Browser::MAX_REPLAY_BYTES + 1)]), static fn (): string => 'x')?->status);
+        $this->assertCount(3, $this->browserHttp->to($url));
+    }
+
     public function test_other_requests_are_not_handled(): void
     {
         $browser = $this->browser();

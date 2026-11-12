@@ -322,6 +322,13 @@ contains the environment token. Pass `handleBrowserProxy(false)` to have it retu
 after answering instead of calling `exit` (frameworks that must finish their own response
 cycle).
 
+**Session replay** is turned on per environment in Watch Tower (Settings → Environments →
+Session replay); nothing to change here. The same proxy then also answers
+`GET {browser_path}/r.js` (the recorder, cached for an hour), `GET {browser_path}/c` (whether
+to record, cached for a minute) and `POST {browser_path}/r` (one gzipped chunk, up to 1 MB).
+Watch Tower's refusals of a chunk (replay off, session limit reached) are passed on so the
+recorder stops.
+
 ### WordPress
 
 ```php
@@ -563,7 +570,7 @@ connection.
 | `WatchTower::flush()` | Send what is buffered now |
 | `WatchTower::honeypotField()` | The hidden Shield honeypot input (empty when Shield is off) |
 | `WatchTower::browserTag()` | The browser monitoring `<script>` tag (empty without `browser_key`) |
-| `WatchTower::handleBrowserProxy(bool $exit = true)` | Answer `{browser_path}/s.js` and `{browser_path}/e` and exit; `false` for other requests |
+| `WatchTower::handleBrowserProxy(bool $exit = true)` | Answer `{browser_path}/s.js`, `{browser_path}/e` and the session replay paths (`/r.js`, `/c`, `/r`) and exit; `false` for other requests |
 
 Every method is a no-op before `init()` and never throws.
 

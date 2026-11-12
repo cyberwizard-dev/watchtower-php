@@ -21,7 +21,12 @@ use WatchTower\Support\Guard;
  * visitor's origin, user agent and client IP, which Watch Tower only trusts together with
  * that token. The token never reaches the page.
  *
- * Visitors never get an error from either path: when Watch Tower is unreachable the script is
+ * Session replay (turned on per environment in Watch Tower) adds GET {browser_path}/r.js (the
+ * recorder, cached like the script), GET {browser_path}/c (whether and how to record, cached for a
+ * minute) and POST {browser_path}/r (one recorded chunk, up to 1 MB). A 4xx from Watch Tower on a
+ * chunk is passed on so the recorder stops.
+ *
+ * Visitors never get an error from these paths: when Watch Tower is unreachable the script is
  * an empty 200 and a beacon a 204. The SDK's calls go through its own small HTTP client, never
  * through the traced curl or Guzzle wrappers, so they are not recorded as outgoing requests.
  */
@@ -29,6 +34,12 @@ final class Browser
 {
     /** Largest beacon body forwarded; bigger ones are dropped (Watch Tower refuses them too). */
     public const MAX_BEACON_BYTES = 65536;
+
+    /** Largest replay chunk forwarded (gzipped JSON); Watch Tower enforces its own limit too. */
+    public const MAX_REPLAY_BYTES = 1048576;
+
+    /** Seconds the replay settings are served from the cache file. */
+    public const REPLAY_CONFIG_TTL_SECONDS = 60;
 
     /** Seconds a fetched script is served from the cache file. */
     public const SCRIPT_TTL_SECONDS = 3600;
@@ -124,6 +135,18 @@ final class Browser
             return Guard::safely(fn (): ShieldResponse => $this->script(), self::emptyScript());
         }
 
+        if ($path === $this->config->browserPath.'/r.js' && ($method === 'GET' || $method === 'HEAD')) {
+            return Guard::safely(fn (): ShieldResponse => $this->cachedScript('/watchtower-replay.js', $this->recorderPath()), self::emptyScript());
+        }
+
+        if ($path === $this->config->browserPath.'/c' && $method === 'GET') {
+            return Guard::safely(fn (): ShieldResponse => $this->replayConfig($server), self::replayOff());
+        }
+
+        if ($path === $this->config->browserPath.'/r' && $method === 'POST') {
+            return Guard::safely(fn (): ShieldResponse => $this->forwardReplay($server, $body ?? self::replayInput(...)), new ShieldResponse(204, ['Cache-Control: no-store'], ''));
+        }
+
         if ($path === $this->config->browserPath.'/e' && $method === 'POST') {
             Guard::safely(fn () => $this->forward($server, $body ?? self::input(...)));
 
@@ -139,9 +162,25 @@ final class Browser
         return $this->config->spoolDir.DIRECTORY_SEPARATOR.'browser-script-'.substr(hash('xxh128', $this->config->baseUrl), 0, 12).'.js';
     }
 
+    /** The cache file of Watch Tower's session replay recorder. */
+    public function recorderPath(): string
+    {
+        return $this->config->spoolDir.DIRECTORY_SEPARATOR.'browser-replay-'.substr(hash('xxh128', $this->config->baseUrl), 0, 12).'.js';
+    }
+
+    /** The cache file of the environment's replay settings. */
+    public function replayConfigPath(): string
+    {
+        return $this->config->spoolDir.DIRECTORY_SEPARATOR.'browser-replay-config-'.substr(hash('xxh128', $this->config->baseUrl.'|'.$this->config->browserKey), 0, 12).'.json';
+    }
+
     private function script(): ShieldResponse
     {
-        $path = $this->scriptPath();
+        return $this->cachedScript('/watchtower-browser.js', $this->scriptPath());
+    }
+
+    private function cachedScript(string $url, string $path): ShieldResponse
+    {
         $now = ($this->clock)();
         clearstatcache(true, $path);
         $modified = is_file($path) ? @filemtime($path) : false;
@@ -151,19 +190,19 @@ final class Browser
             return $cached === '' ? self::emptyScript() : self::scriptResponse($cached);
         }
 
-        $response = $this->http->request('GET', $this->config->baseUrl.'/watchtower-browser.js', [
+        $response = $this->http->request('GET', $this->config->baseUrl.$url, [
             'Accept' => 'application/javascript',
             'User-Agent' => 'watchtower-php',
         ], null, self::TIMEOUT_SECONDS, self::TIMEOUT_SECONDS);
 
         if ($response['status'] >= 200 && $response['status'] < 300 && $response['body'] !== '') {
-            $this->writeScript($response['body'], $now);
+            $this->writeCache($path, $response['body'], $now);
 
             return self::scriptResponse($response['body']);
         }
 
         // Watch Tower failed: keep serving the last good copy (or nothing) and try again in a minute.
-        $this->writeScript(is_string($cached) ? $cached : '', $now - self::SCRIPT_TTL_SECONDS + self::SCRIPT_RETRY_SECONDS);
+        $this->writeCache($path, is_string($cached) ? $cached : '', $now - self::SCRIPT_TTL_SECONDS + self::SCRIPT_RETRY_SECONDS);
 
         return is_string($cached) && $cached !== '' ? self::scriptResponse($cached) : self::emptyScript();
     }
@@ -186,18 +225,71 @@ final class Browser
             return;
         }
 
-        $this->http->request('POST', $this->config->browserBeaconUrl(), [
+        $this->http->request('POST', $this->config->browserBeaconUrl(), $this->forwardHeaders($server, 'text/plain'), $payload, self::TIMEOUT_SECONDS, self::TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Whether the script records sessions: Watch Tower's answer, cached for a minute, or
+     * `{"replay":null}` when it cannot say (unreachable, or too old to know session replay).
+     *
+     * @param  array<string, mixed>  $server
+     */
+    private function replayConfig(array $server): ShieldResponse
+    {
+        $path = $this->replayConfigPath();
+        $now = ($this->clock)();
+        clearstatcache(true, $path);
+        $modified = is_file($path) ? @filemtime($path) : false;
+        $cached = $modified !== false && $modified + self::REPLAY_CONFIG_TTL_SECONDS > $now ? @file_get_contents($path) : false;
+
+        if (! is_string($cached) || $cached === '') {
+            $response = $this->http->request('GET', $this->config->browserBeaconUrl().'/config', $this->forwardHeaders($server, 'application/json'), null, self::TIMEOUT_SECONDS, self::TIMEOUT_SECONDS);
+            $cached = $response['status'] === 200 && is_array(json_decode($response['body'], true)) ? $response['body'] : '{"replay":null}';
+            $this->writeCache($path, $cached, $now);
+        }
+
+        return new ShieldResponse(200, ['Content-Type: application/json', 'Cache-Control: private, max-age='.self::REPLAY_CONFIG_TTL_SECONDS], $cached);
+    }
+
+    /**
+     * @param  array<string, mixed>  $server
+     * @param  \Closure(): string  $body
+     */
+    private function forwardReplay(array $server, \Closure $body): ShieldResponse
+    {
+        $length = $server['CONTENT_LENGTH'] ?? null;
+        $payload = is_numeric($length) && (int) $length > self::MAX_REPLAY_BYTES ? '' : $body();
+
+        if ($payload === '' || strlen($payload) > self::MAX_REPLAY_BYTES) {
+            return new ShieldResponse(413, ['Cache-Control: no-store'], '');
+        }
+
+        $response = $this->http->request('POST', $this->config->browserBeaconUrl().'/replay', $this->forwardHeaders($server, 'text/plain'), $payload, self::TIMEOUT_SECONDS, self::TIMEOUT_SECONDS);
+        $status = $response['status'] >= 400 && $response['status'] < 500 ? $response['status'] : 204;
+
+        return new ShieldResponse($status, ['Cache-Control: no-store'], '');
+    }
+
+    /**
+     * The environment token and the visitor's origin, user agent and IP.
+     *
+     * @param  array<string, mixed>  $server
+     * @return array<string, string>
+     */
+    private function forwardHeaders(array $server, string $contentType): array
+    {
+        return [
             'Authorization' => 'Bearer '.$this->config->token,
-            'Content-Type' => 'text/plain',
+            'Content-Type' => $contentType,
             'User-Agent' => 'watchtower-php',
             'X-Watchtower-Origin' => self::header(self::origin($server)),
             'X-Watchtower-User-Agent' => self::header(is_string($server['HTTP_USER_AGENT'] ?? null) ? $server['HTTP_USER_AGENT'] : ''),
             'X-Watchtower-Client-Ip' => self::header($this->config->clientIp->resolve($server)),
-        ], $payload, self::TIMEOUT_SECONDS, self::TIMEOUT_SECONDS);
+        ];
     }
 
     /** Atomic write (temp file + rename), with the mtime that dates the copy. */
-    private function writeScript(string $script, int $fetchedAt): void
+    private function writeCache(string $path, string $script, int $fetchedAt): void
     {
         $directory = $this->config->spoolDir;
 
@@ -205,7 +297,6 @@ final class Browser
             return;
         }
 
-        $path = $this->scriptPath();
         $temp = $path.'.'.bin2hex(random_bytes(4)).'.tmp';
 
         if (@file_put_contents($temp, $script) === false) {
@@ -239,6 +330,16 @@ final class Browser
             'Content-Type: application/javascript; charset=utf-8',
             'Cache-Control: public, max-age='.self::SCRIPT_TTL_SECONDS,
         ], $script);
+    }
+
+    private static function replayOff(): ShieldResponse
+    {
+        return new ShieldResponse(200, ['Content-Type: application/json', 'Cache-Control: no-store'], '{"replay":null}');
+    }
+
+    private static function replayInput(): string
+    {
+        return (string) @file_get_contents('php://input', false, null, 0, self::MAX_REPLAY_BYTES + 1);
     }
 
     private static function emptyScript(): ShieldResponse
